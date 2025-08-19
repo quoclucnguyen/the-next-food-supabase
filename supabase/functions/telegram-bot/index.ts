@@ -1,4 +1,4 @@
-import { Bot, webhookCallback, Context, InlineKeyboard } from "https://deno.land/x/grammy@v1.36.3/mod.ts";
+import { Bot, webhookCallback } from "https://deno.land/x/grammy@v1.36.3/mod.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 
 // Initialize Supabase client
@@ -21,16 +21,6 @@ interface FoodItem {
   price?: number;
 }
 
-// Constants
-const COMMANDS = {
-  start: "Start the bot and see welcome message",
-  help: "Show all available commands",
-  menu: "Browse food categories",
-  random: "Get a random food suggestion",
-  search: "Search for specific foods (e.g., /search pizza)",
-  login: "Login or register with your email"
-};
-
 // Initialize bot with error handling
 const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN');
 if (!botToken) {
@@ -52,96 +42,22 @@ bot.catch((err) => {
 
 // Command handlers
 bot.command("start", async (ctx) => {
-  const welcomeText = `🍽️ *Welcome to Foodie Bot!* 🍕\n\n` +
-    `I can help you discover delicious foods and manage your orders.\n\n` +
-    `Use /help to see all available commands.`;
+  const welcomeText = `🍽️ *Welcome to Bot!*\n\n`;
 
   await ctx.reply(welcomeText, { parse_mode: "Markdown" });
 });
 
-bot.command("help", async (ctx) => {
-  let helpText = "*Available Commands:*\n\n";
-  Object.entries(COMMANDS).forEach(([command, description]) => {
-    helpText += `/${command} - ${description}\n`;
-  });
-  
-  await ctx.reply(helpText, { parse_mode: "Markdown" });
-});
-
-bot.command("menu", async (ctx) => {
-  const categories = ["🍕 Pizza", "🍔 Burgers", "🍣 Sushi", "🥗 Salads", "🍝 Pasta"];
-  const keyboard = new InlineKeyboard();
-  
-  // Add categories in two columns
-  for (let i = 0; i < categories.length; i += 2) {
-    const row = categories.slice(i, i + 2);
-    keyboard.text(row[0].split(" ")[1], `category_${row[0].split(" ")[1].toLowerCase()}`);
-    if (row[1]) {
-      keyboard.text(row[1].split(" ")[1], `category_${row[1].split(" ")[1].toLowerCase()}`);
-    }
-    keyboard.row();
-  }
-
-  await ctx.reply("🍽️ *Choose a category:*", {
-    reply_markup: keyboard,
-    parse_mode: "Markdown"
-  });
-});
-
-bot.command("random", async (ctx) => {
-  // In a real app, fetch from your database
-  const foods: FoodItem[] = [
-    { id: "1", name: "Margherita Pizza", category: "pizza", price: 12.99 },
-    { id: "2", name: "Chicken Burger", category: "burgers", price: 9.99 },
-    { id: "3", name: "California Roll", category: "sushi", price: 15.99 }
-  ];
-  
-  const randomFood = foods[Math.floor(Math.random() * foods.length)];
-  await ctx.reply(
-    `🍴 *Random Suggestion:* ${randomFood.name}\n` +
-    `💵 Price: $${randomFood.price}\n` +
-    `📋 Category: ${randomFood.category}`,
-    { parse_mode: "Markdown" }
-  );
-});
-
-bot.command("search", async (ctx) => {
-  const query = ctx.match;
-  if (!query) {
-    await ctx.reply("Please provide a search term. Example: /search pizza");
-    return;
-  }
-
-  // In a real app, search your database
-  const results: FoodItem[] = [
-    { id: "1", name: "Margherita Pizza", category: "pizza", price: 12.99 },
-    { id: "2", name: "Pepperoni Pizza", category: "pizza", price: 14.99 }
-  ].filter(food => 
-    food.name.toLowerCase().includes(query.toLowerCase())
-  );
-
-  if (results.length === 0) {
-    await ctx.reply(`No results found for "${query}"`);
-    return;
-  }
-
-  let response = `🔍 *Search Results for "${query}":*\n\n`;
-  results.forEach((food, index) => {
-    response += `${index + 1}. *${food.name}* - $${food.price}\n`;
-  });
-
-  await ctx.reply(response, { parse_mode: "Markdown" });
-});
 
 // Login command
 bot.command("login", async (ctx) => {
-  const email = ctx.match.trim();
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  
-  if (!email || !emailRegex.test(email)) {
-    await ctx.reply("Please provide a valid email address. Example: /login your@email.com");
+  const telegramId = ctx.from?.id;
+  if (!telegramId) {
+    await ctx.reply("❌ Could not detect your Telegram ID. Please try again later.");
     return;
   }
+
+  // Generate a deterministic email from Telegram ID
+  const email = `tg-${telegramId}@telegram.local`;
 
   try {
     // Generate a random password for the user
@@ -161,6 +77,13 @@ bot.command("login", async (ctx) => {
     });
 
     if (authError) {
+      type AuthErrorShape = Error & { name?: string; status?: number };
+      const e = authError as AuthErrorShape;
+      console.error('Auth admin createUser error:', {
+        message: authError.message,
+        name: e.name,
+        status: e.status,
+      });
       if (authError.message.includes('already registered')) {
         await ctx.reply("✅ You're already registered! You can now use all bot features.");
         return;
@@ -186,6 +109,12 @@ bot.command("login", async (ctx) => {
     await ctx.reply("✅ Registration successful! You can now use all bot features.");
   } catch (error) {
     console.error("Registration error:", error);
+    try {
+      // Log deeper details if present (helps with DB debugging)
+      console.error('Registration error details:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    } catch (_) {
+      // ignore
+    }
     await ctx.reply("❌ An error occurred during registration. Please try again later.");
   }
 });

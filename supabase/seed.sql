@@ -73,6 +73,31 @@ BEGIN
     now()
   )
   ON CONFLICT (provider, provider_id) DO NOTHING;
+
+  -- === 3) Seed sample food items for the demo user (idempotent) ===
+  INSERT INTO public.food_items
+    (user_id, name, quantity, unit, expiration_date, category, image_url)
+  SELECT v.user_id, v.name, v.quantity, v.unit, v.expiration_date, v.category, v.image_url
+  FROM (
+    VALUES
+      (v_user_id, 'Milk',            1,   'liters',   (current_date + interval '5 days')::date,   'dairy',      NULL),
+      (v_user_id, 'Apples',          6,   'pieces',   (current_date + interval '10 days')::date,  'fruits',     NULL),
+      (v_user_id, 'Chicken Breast',  2,   'lbs',      (current_date + interval '3 days')::date,   'meat',       NULL),
+      (v_user_id, 'Rice',            2,   'kg',       (current_date + interval '365 days')::date, 'grains',     NULL),
+      (v_user_id, 'Spinach',         300, 'g',        (current_date + interval '2 days')::date,   'vegetables', NULL),
+      (v_user_id, 'Yogurt',          4,   'cups',     (current_date + interval '12 days')::date,  'dairy',      NULL),
+      (v_user_id, 'Olive Oil',       1,   'bottles',  (current_date + interval '720 days')::date, 'pantry',     NULL),
+      (v_user_id, 'Soda',            6,   'cans',     (current_date + interval '180 days')::date, 'beverages',  NULL),
+      (v_user_id, 'Ice Cream',       2,   'packages', (current_date + interval '90 days')::date,  'frozen',     NULL),
+      (v_user_id, 'Chips',           3,   'packages', (current_date + interval '120 days')::date, 'snacks',     NULL)
+  ) AS v(user_id, name, quantity, unit, expiration_date, category, image_url)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM public.food_items f
+    WHERE f.user_id = v.user_id
+      AND f.name = v.name
+      AND f.expiration_date = v.expiration_date
+  );
 END
 $$;
 
