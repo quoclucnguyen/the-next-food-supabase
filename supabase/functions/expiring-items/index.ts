@@ -48,13 +48,27 @@ Deno.serve(async (req) => {
       global: { headers: { Authorization: authHeader } },
     });
 
-    // Prefer RPC to leverage the SQL function and any future optimizations
-    const { data, error } = await supabase.rpc('get_food_items_expiring_soon', {
-      days_ahead: daysAhead,
-    });
+    // Get current user to filter by user_id
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+      });
+    }
+
+    // Query food items expiring within the specified days ahead
+    const { data, error } = await supabase
+      .from('food_items')
+      .select('id, name, quantity, unit, expiration_date, category, image_url')
+      .eq('user_id', user.id)
+      .gte('expiration_date', new Date().toISOString().split('T')[0])
+      .lte('expiration_date', new Date(Date.now() + daysAhead * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
+      .order('expiration_date', { ascending: true })
+      .order('name', { ascending: true });
 
     if (error) {
-      console.error('RPC error:', error);
+      console.error('Query error:', error);
       return new Response(
         JSON.stringify({ error: error.message }),
         { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) } },

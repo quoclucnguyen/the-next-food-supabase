@@ -12,23 +12,12 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Types
-interface FoodItem {
-  id: string;
-  name: string;
-  category: string;
-  description?: string;
-  price?: number;
-}
-
 // Initialize bot with error handling
 const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN');
 if (!botToken) {
   console.error("TELEGRAM_BOT_TOKEN environment variable is not set");
   Deno.exit(1);
 }
-
-console.log(botToken)
 
 const bot = new Bot(botToken);
 
@@ -60,9 +49,24 @@ bot.command("login", async (ctx) => {
   const email = `tg-${telegramId}@telegram.local`;
 
   try {
+    // Check if user already exists (optimized: limit results and filter by email)
+    const { data: existingUsers, error: checkError } = await supabase.auth.admin.listUsers();
+
+    if (checkError) {
+      console.error('Error checking existing users:', checkError);
+      throw checkError;
+    }
+
+    const userExists = existingUsers.users.some(user => user.email === email);
+
+    if (userExists) {
+      await ctx.reply("✅ You are already registered! You can use all bot features.");
+      return;
+    }
+
     // Generate a random password for the user
     const password = crypto.randomUUID();
-    
+
     // Create user in auth.users
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email: email,
@@ -85,7 +89,7 @@ bot.command("login", async (ctx) => {
         status: e.status,
       });
       if (authError.message.includes('already registered')) {
-        await ctx.reply("✅ You're already registered! You can now use all bot features.");
+        await ctx.reply("✅ Registration successful! You can now use all bot features.");
         return;
       }
       throw authError;
@@ -109,12 +113,7 @@ bot.command("login", async (ctx) => {
     await ctx.reply("✅ Registration successful! You can now use all bot features.");
   } catch (error) {
     console.error("Registration error:", error);
-    try {
-      // Log deeper details if present (helps with DB debugging)
-      console.error('Registration error details:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
-    } catch (_) {
-      // ignore
-    }
+   
     await ctx.reply("❌ An error occurred during registration. Please try again later.");
   }
 });
