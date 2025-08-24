@@ -2,6 +2,7 @@
 -- Seed defaults and ensure idempotency for local/dev environments
 -- - Creates a demo auth user (if missing)
 -- - Ensures an email identity with required provider_id
+-- - Creates a demo public.users profile (if missing)
 -- - Ensures trigger to seed defaults on new users
 -- - Backfills default categories/units and user_settings for all users
 
@@ -73,6 +74,31 @@ BEGIN
     now()
   )
   ON CONFLICT (provider, provider_id) DO NOTHING;
+
+  -- === 2.1) Ensure a public.users entry exists for the demo user (idempotent) ===
+  INSERT INTO public.users (
+    id,
+    email,
+    first_name,
+    last_name,
+    username,
+    last_login,
+    created_at,
+    updated_at,
+    chat_id
+  )
+  VALUES (
+    v_user_id,
+    v_email,
+    'Demo',
+    'User',
+    'demouser',
+    now(),
+    now(),
+    now(),
+    1010102929
+  )
+  ON CONFLICT (id) DO NOTHING;
 
   -- === 3) Seed sample food items for the demo user (idempotent) ===
   INSERT INTO public.food_items
