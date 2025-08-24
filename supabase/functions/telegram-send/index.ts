@@ -29,8 +29,8 @@ function authenticateRequest(req: Request): boolean {
   // Check for service role authentication (for internal database trigger calls)
   if (serviceRoleKey) {
     const authHeader = req.headers.get('Authorization');
-    if (authHeader && authHeader.includes('Bearer')) {
-      const token = authHeader.replace('Bearer ', '');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring('Bearer '.length);
       if (token === serviceRoleKey) {
         return true;
       }

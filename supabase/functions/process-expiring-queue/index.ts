@@ -12,7 +12,7 @@ interface QueueItem {
   category: string;
   expiration_date: string;
   days_until_expiry: number;
-  notification_priority: number;
+  notification_priority: 'low' | 'medium' | 'high' | 'urgent';
   scheduled_at: string;
   status: string;
   created_at: string;
