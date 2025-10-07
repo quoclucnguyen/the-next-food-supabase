@@ -19,7 +19,7 @@ interface CheckExpiringItemsOptions {
   userId?: string;
   category?: string;
   includeExpired?: boolean;
-  sortBy?: 'expiry_date' | 'name' | 'priority' | 'category';
+  sortBy?: 'expiration_date' | 'name' | 'priority' | 'category';
   sortOrder?: 'asc' | 'desc';
   limit?: number;
 }
@@ -90,7 +90,7 @@ async function checkExpiringItems(options: CheckExpiringItemsOptions = {}): Prom
     userId,
     category,
     includeExpired = false,
-    sortBy = 'expiry_date',
+    sortBy = 'expiration_date',
     sortOrder = 'asc',
     limit = 1000
   } = options;
@@ -312,7 +312,7 @@ Deno.serve(async (req) => {
       "days_ahead": 5,
       "category": "meat",
       "include_expired": false,
-      "sort_by": "expiry_date",
+      "sort_by": "expiration_date",
       "sort_order": "asc",
       "limit": 100
     }'
