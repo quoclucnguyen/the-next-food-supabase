@@ -47,7 +47,8 @@ interface FoodItemRecord {
   item_name: string;
   created_at: string;
   updated_at: string;
-  food_item_id: string;
+  food_item_id?: string;
+  cosmetic_id?: string;
   processed_at: string | null;
   scheduled_at: string;
   expiration_date: string;
@@ -80,6 +81,7 @@ function formatTelegramMessage(record: FoodItemRecord): string {
     'vegetables': '🥕',
     'fruits': '🍎',
     'beverages': '🥤',
+    'cosmetics': '💄',
     'other': '📦'
   }[category] || '📦';
 
@@ -102,8 +104,15 @@ Category: ${category.charAt(0).toUpperCase() + category.slice(1)}`;
 }
 
 async function sendTelegramNotification(record: FoodItemRecord): Promise<void> {
+  // Determine item type and ID
+  const isFoodItem = !!record.food_item_id;
+  const isCosmeticItem = !!record.cosmetic_id;
+  const itemId = record.food_item_id || record.cosmetic_id;
+
   logger.info('Starting Telegram notification', {
+    item_type: isFoodItem ? 'food' : 'cosmetic',
     food_item_id: record.food_item_id,
+    cosmetic_id: record.cosmetic_id,
     chat_id: record.chat_id,
     item_name: record.item_name
   });
@@ -114,41 +123,69 @@ async function sendTelegramNotification(record: FoodItemRecord): Promise<void> {
   }
 
   try {
-    // Fetch image_url from food_items table using food_item_id
-    logger.info('Fetching image_url from database', { food_item_id: record.food_item_id });
-    const { data: foodItem, error: fetchError } = await supabase
-      .from('food_items')
-      .select('image_url')
-      .eq('id', record.food_item_id)
-      .single();
+    let imageUrl: string | null = null;
+    let fetchError: any = null;
+
+    // Fetch image_url from appropriate table
+    if (isFoodItem && record.food_item_id) {
+      logger.info('Fetching image_url from food_items table', { food_item_id: record.food_item_id });
+      const { data, error } = await supabase
+        .from('food_items')
+        .select('image_url')
+        .eq('id', record.food_item_id)
+        .single();
+
+      imageUrl = data?.image_url || null;
+      fetchError = error;
+    } else if (isCosmeticItem && record.cosmetic_id) {
+      logger.info('Fetching image_url from cosmetics table', { cosmetic_id: record.cosmetic_id });
+      const { data, error } = await supabase
+        .from('cosmetics')
+        .select('image_url')
+        .eq('id', record.cosmetic_id)
+        .single();
+
+      imageUrl = data?.image_url || null;
+      fetchError = error;
+    }
 
     if (fetchError) {
-      logger.error('Failed to fetch food item image_url', fetchError);
-      // Continue with text message if fetch fails
+      logger.error('Failed to fetch item image_url', {
+        item_type: isFoodItem ? 'food' : 'cosmetic',
+        item_id: itemId,
+        error: fetchError
+      });
     }
 
     const message = formatTelegramMessage(record);
-    logger.info('Formatted message', { messageLength: message.length, hasImage: !!foodItem?.image_url });
+    logger.info('Formatted message', {
+      messageLength: message.length,
+      hasImage: !!imageUrl,
+      item_type: isFoodItem ? 'food' : 'cosmetic'
+    });
 
     // Send photo if image_url exists, otherwise send text message
-    if (foodItem?.image_url) {
+    if (imageUrl) {
       logger.info('Sending photo message', {
         chat_id: record.chat_id,
-        image_url: foodItem.image_url.substring(0, 50) + '...' // Log partial URL for privacy
+        item_type: isFoodItem ? 'food' : 'cosmetic',
+        image_url: imageUrl.substring(0, 50) + '...' // Log partial URL for privacy
       });
 
-      const result = await bot.api.sendPhoto(record.chat_id, foodItem.image_url, {
+      const result = await bot.api.sendPhoto(record.chat_id, imageUrl, {
         caption: message,
         parse_mode: 'Markdown'
       });
 
       logger.info('Photo message sent successfully', {
         chat_id: record.chat_id,
-        message_id: result.message_id
+        message_id: result.message_id,
+        item_type: isFoodItem ? 'food' : 'cosmetic'
       });
     } else {
       logger.info('Sending text message (no image available)', {
         chat_id: record.chat_id,
+        item_type: isFoodItem ? 'food' : 'cosmetic',
         reason: fetchError ? 'fetch_error' : 'no_image_url'
       });
 
@@ -158,11 +195,16 @@ async function sendTelegramNotification(record: FoodItemRecord): Promise<void> {
 
       logger.info('Text message sent successfully', {
         chat_id: record.chat_id,
-        message_id: result.message_id
+        message_id: result.message_id,
+        item_type: isFoodItem ? 'food' : 'cosmetic'
       });
     }
   } catch (error) {
-    logger.error('Failed to send Telegram notification', error);
+    logger.error('Failed to send Telegram notification', {
+      item_type: isFoodItem ? 'food' : 'cosmetic',
+      item_id: itemId,
+      error
+    });
     // Don't throw - we don't want webhook processing to fail due to notification issues
   }
 }
@@ -214,6 +256,7 @@ serve(async (req) => {
       category: record.category,
       chat_id: record.chat_id,
       food_item_id: record.food_item_id,
+      cosmetic_id: record.cosmetic_id,
       expiration_date: record.expiration_date,
       formatted_expiration_date: formatDate(record.expiration_date),
       days_until_expiry: record.days_until_expiry

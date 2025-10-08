@@ -85,7 +85,8 @@ function calculateDaysUntilExpiry(expirationDate: string): number {
 
 // Interface for expiring items queue record
 interface ExpiringQueueRecord {
-  food_item_id: string;
+  food_item_id?: string;
+  cosmetic_id?: string;
   user_id: string;
   chat_id: number;
   item_name: string;
@@ -99,12 +100,26 @@ interface ExpiringQueueRecord {
   scheduled_at?: string;
 }
 
+// Interface for merged item (food or cosmetic)
+interface MergedItem {
+  id: string;
+  user_id: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  expiration_date: string;
+  category: string;
+  image_url?: string;
+  type: 'food' | 'cosmetic';
+}
+
 // Function to insert items into expiring_items_queue
-async function insertIntoExpiringQueue(items: any[], usersMap: Map<string, number>): Promise<number> {
+async function insertIntoExpiringQueue(items: MergedItem[], usersMap: Map<string, number>): Promise<number> {
   console.log(`Inserting ${items.length} items into expiring_items_queue`);
 
   const queueRecords: ExpiringQueueRecord[] = items.map(item => ({
-    food_item_id: item.id,
+    food_item_id: item.type === 'food' ? item.id : null,
+    cosmetic_id: item.type === 'cosmetic' ? item.id : null,
     user_id: item.user_id,
     chat_id: usersMap.get(item.user_id) || 0,
     item_name: item.name,
@@ -367,38 +382,95 @@ Deno.serve(async (req) => {
       const futureDate = new Date();
       futureDate.setDate(today.getDate() + daysAhead);
 
-      // Query food_items without JOIN (Option 2 approach)
-      let query = supabase
+      // Query food_items
+      console.log('Querying food_items...');
+      let foodQuery = supabase
         .from('food_items')
         .select('id, user_id, name, quantity, unit, expiration_date, category, image_url')
         .gte('expiration_date', today.toISOString().split('T')[0])
         .lte('expiration_date', futureDate.toISOString().split('T')[0]);
 
-      // Apply filters
+      // Apply filters for food items
       if (userId) {
-        query = query.eq('user_id', userId);
+        foodQuery = foodQuery.eq('user_id', userId);
       }
 
-      if (category) {
-        query = query.eq('category', category);
+      if (category && category !== 'cosmetics') {
+        foodQuery = foodQuery.eq('category', category);
       }
 
       // Apply sorting
-      query = query.order(sortBy, { ascending: sortOrder === 'asc' });
+      foodQuery = foodQuery.order(sortBy, { ascending: sortOrder === 'asc' });
 
-      // Apply limit
+      // Apply limit for food items
       if (limit > 0) {
-        query = query.limit(limit);
+        foodQuery = foodQuery.limit(Math.floor(limit / 2)); // Split limit between food and cosmetics
       }
 
-      const { data: rawItems, error: queryError } = await query;
+      const { data: foodItems, error: foodError } = await foodQuery;
 
-      if (queryError) {
-        console.error('Error fetching items for queue insertion:', queryError);
-        throw new Error(`Failed to fetch items: ${queryError.message}`);
+      if (foodError) {
+        console.error('Error fetching food items:', foodError);
+        throw new Error(`Failed to fetch food items: ${foodError.message}`);
       }
 
-      if (!rawItems || rawItems.length === 0) {
+      // Query cosmetics
+      console.log('Querying cosmetics...');
+      let cosmeticQuery = supabase
+        .from('cosmetics')
+        .select('id, user_id, name, expiry_date')
+        .not('expiry_date', 'is', null)
+        .gte('expiry_date', today.toISOString().split('T')[0])
+        .lte('expiry_date', futureDate.toISOString().split('T')[0]);
+
+      // Apply filters for cosmetics
+      if (userId) {
+        cosmeticQuery = cosmeticQuery.eq('user_id', userId);
+      }
+
+      if (category === 'cosmetics') {
+        cosmeticQuery = cosmeticQuery.eq('status', 'active'); // Only active cosmetics
+      }
+
+      // Apply sorting
+      cosmeticQuery = cosmeticQuery.order(sortBy === 'expiration_date' ? 'expiry_date' : 'name', { ascending: sortOrder === 'asc' });
+
+      // Apply limit for cosmetics
+      if (limit > 0) {
+        cosmeticQuery = cosmeticQuery.limit(Math.floor(limit / 2));
+      }
+
+      const { data: cosmeticItems, error: cosmeticError } = await cosmeticQuery;
+
+      if (cosmeticError) {
+        console.error('Error fetching cosmetics:', cosmeticError);
+        throw new Error(`Failed to fetch cosmetics: ${cosmeticError.message}`);
+      }
+
+      // Merge food items and cosmetics
+      const rawItems: any[] = [];
+
+      if (foodItems) {
+        rawItems.push(...foodItems.map(item => ({ ...item, type: 'food' })));
+      }
+
+      if (cosmeticItems) {
+        rawItems.push(...cosmeticItems.map(item => ({
+          id: item.id,
+          user_id: item.user_id,
+          name: item.name,
+          quantity: 1, // Cosmetics default to 1 item
+          unit: 'item',
+          expiration_date: item.expiry_date,
+          category: 'cosmetics',
+          image_url: null, // Cosmetics don't have image_url in this query
+          type: 'cosmetic'
+        })));
+      }
+
+      console.log(`Found ${rawItems.length} total items (${foodItems?.length || 0} food, ${cosmeticItems?.length || 0} cosmetics)`);
+
+      if (rawItems.length === 0) {
         console.log('No items found to insert into queue');
         return new Response(JSON.stringify({
           success: true,
@@ -415,7 +487,7 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Get unique user_ids from items
+      // Get unique user_ids from all items
       const userIds = [...new Set(rawItems.map(item => item.user_id))];
 
       // Query users table to get chat_ids
@@ -472,6 +544,11 @@ Deno.serve(async (req) => {
         items_found: rawItems.length,
         items_with_chat_id: itemsWithChatId.length,
         items_without_chat_id: rawItems.length - itemsWithChatId.length,
+        breakdown: {
+          food_items: foodItems?.length || 0,
+          cosmetics: cosmeticItems?.length || 0,
+          total: rawItems.length
+        },
         summary,
         filters_applied: {
           days_ahead: daysAhead,
@@ -531,6 +608,7 @@ Deno.serve(async (req) => {
   //   "items_found": 5,
   //   "items_with_chat_id": 3,
   //   "items_without_chat_id": 2,
+  //   "breakdown": { "food_items": 3, "cosmetics": 2, "total": 5 },
   //   "summary": { "urgent": 1, "high": 1, "medium": 1, "low": 0, "total": 3 }
   // }
 
