@@ -83,6 +83,54 @@ function calculateDaysUntilExpiry(expirationDate: string): number {
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
 
+// Interface for expiring items queue record
+interface ExpiringQueueRecord {
+  food_item_id: string;
+  user_id: string;
+  chat_id: number;
+  item_name: string;
+  quantity: number;
+  unit: string;
+  expiration_date: string;
+  category: string;
+  days_until_expiry: number;
+  notification_priority: 'urgent' | 'high' | 'medium' | 'low';
+  status?: string;
+  scheduled_at?: string;
+}
+
+// Function to insert items into expiring_items_queue
+async function insertIntoExpiringQueue(items: any[], usersMap: Map<string, number>): Promise<number> {
+  console.log(`Inserting ${items.length} items into expiring_items_queue`);
+
+  const queueRecords: ExpiringQueueRecord[] = items.map(item => ({
+    food_item_id: item.id,
+    user_id: item.user_id,
+    chat_id: usersMap.get(item.user_id) || 0,
+    item_name: item.name,
+    quantity: item.quantity,
+    unit: item.unit,
+    expiration_date: item.expiration_date,
+    category: item.category,
+    days_until_expiry: calculateDaysUntilExpiry(item.expiration_date),
+    notification_priority: getPriority(calculateDaysUntilExpiry(item.expiration_date)),
+    status: 'pending',
+    scheduled_at: new Date().toISOString()
+  }));
+
+  const { error } = await supabase
+    .from('expiring_items_queue')
+    .insert(queueRecords);
+
+  if (error) {
+    console.error('Error inserting into expiring_items_queue:', error);
+    throw new Error(`Failed to insert into expiring_items_queue: ${error.message}`);
+  }
+
+  console.log(`Successfully inserted ${queueRecords.length} items into expiring_items_queue`);
+  return queueRecords.length;
+}
+
 // Main function to check for expiring items
 async function checkExpiringItems(options: CheckExpiringItemsOptions = {}): Promise<CheckExpiringItemsResult> {
   const {
@@ -102,6 +150,7 @@ async function checkExpiringItems(options: CheckExpiringItemsOptions = {}): Prom
   const futureDate = new Date();
   futureDate.setDate(today.getDate() + daysAhead);
 
+  // Query food_items without JOIN (Option 2 approach)
   let query = supabase
     .from('food_items')
     .select('id, user_id, name, quantity, unit, expiration_date, category, image_url')
@@ -125,14 +174,14 @@ async function checkExpiringItems(options: CheckExpiringItemsOptions = {}): Prom
     query = query.limit(limit);
   }
 
-  const { data: items, error } = await query;
+  const { data: rawItems, error } = await query;
 
   if (error) {
     console.error('Error fetching expiring items:', error);
     throw new Error(`Failed to fetch expiring items: ${error.message}`);
   }
 
-  if (!items) {
+  if (!rawItems || rawItems.length === 0) {
     return {
       items: [],
       total_count: 0,
@@ -152,8 +201,28 @@ async function checkExpiringItems(options: CheckExpiringItemsOptions = {}): Prom
     };
   }
 
+  // Get unique user_ids from items
+  const userIds = [...new Set(rawItems.map(item => item.user_id))];
+
+  // Query users table to get chat_ids
+  const { data: users, error: usersError } = await supabase
+    .from('users')
+    .select('id, chat_id')
+    .in('id', userIds);
+
+  if (usersError) {
+    console.error('Error fetching users:', usersError);
+    throw new Error(`Failed to fetch users: ${usersError.message}`);
+  }
+
+  // Create map of user_id -> chat_id
+  const usersMap = new Map(users?.map(user => [user.id, user.chat_id]) || []);
+
+  // Filter items to only include those with chat_id and process them
+  const itemsWithChatId = rawItems.filter(item => usersMap.get(item.user_id));
+
   // Process items and calculate additional data
-  const processedItems: ExpiringFoodItem[] = items.map(item => {
+  const processedItems: ExpiringFoodItem[] = itemsWithChatId.map(item => {
     const daysUntilExpiry = calculateDaysUntilExpiry(item.expiration_date);
     const priority = getPriority(daysUntilExpiry);
 
@@ -185,7 +254,7 @@ async function checkExpiringItems(options: CheckExpiringItemsOptions = {}): Prom
     total: filteredItems.length
   };
 
-  console.log(`Found ${filteredItems.length} items expiring within ${daysAhead} days`);
+  console.log(`Found ${filteredItems.length} items expiring within ${daysAhead} days (with chat_id)`);
 
   return {
     items: filteredItems,
@@ -271,11 +340,149 @@ Deno.serve(async (req) => {
 
     console.log('Check expiring items request:', options);
 
-    const result = await checkExpiringItems(options);
+    if (method === 'GET') {
+      // GET: Just return the items (existing flow)
+      const result = await checkExpiringItems(options);
 
-    return new Response(JSON.stringify(result), {
-      headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
-    });
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+      });
+    } else if (method === 'POST') {
+      // POST: Find items and insert into expiring_items_queue
+      console.log('POST request - will insert items into expiring_items_queue');
+
+      // First, get the items (but we need the raw items with chat_id for queue insertion)
+      const {
+        daysAhead = 7,
+        userId,
+        category,
+        includeExpired = false,
+        sortBy = 'expiration_date',
+        sortOrder = 'asc',
+        limit = 1000
+      } = options;
+
+      // Calculate date range
+      const today = new Date();
+      const futureDate = new Date();
+      futureDate.setDate(today.getDate() + daysAhead);
+
+      // Query food_items without JOIN (Option 2 approach)
+      let query = supabase
+        .from('food_items')
+        .select('id, user_id, name, quantity, unit, expiration_date, category, image_url')
+        .gte('expiration_date', today.toISOString().split('T')[0])
+        .lte('expiration_date', futureDate.toISOString().split('T')[0]);
+
+      // Apply filters
+      if (userId) {
+        query = query.eq('user_id', userId);
+      }
+
+      if (category) {
+        query = query.eq('category', category);
+      }
+
+      // Apply sorting
+      query = query.order(sortBy, { ascending: sortOrder === 'asc' });
+
+      // Apply limit
+      if (limit > 0) {
+        query = query.limit(limit);
+      }
+
+      const { data: rawItems, error: queryError } = await query;
+
+      if (queryError) {
+        console.error('Error fetching items for queue insertion:', queryError);
+        throw new Error(`Failed to fetch items: ${queryError.message}`);
+      }
+
+      if (!rawItems || rawItems.length === 0) {
+        console.log('No items found to insert into queue');
+        return new Response(JSON.stringify({
+          success: true,
+          items_inserted: 0,
+          message: 'No items found to insert into queue',
+          filters_applied: {
+            days_ahead: daysAhead,
+            user_id: userId,
+            category,
+            include_expired: includeExpired
+          }
+        }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+        });
+      }
+
+      // Get unique user_ids from items
+      const userIds = [...new Set(rawItems.map(item => item.user_id))];
+
+      // Query users table to get chat_ids
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, chat_id')
+        .in('id', userIds);
+
+      if (usersError) {
+        console.error('Error fetching users for queue insertion:', usersError);
+        throw new Error(`Failed to fetch users: ${usersError.message}`);
+      }
+
+      // Create map of user_id -> chat_id
+      const usersMap = new Map(users?.map(user => [user.id, user.chat_id]) || []);
+
+      // Filter items to only include those with chat_id
+      const itemsWithChatId = rawItems.filter(item => usersMap.get(item.user_id));
+
+      if (itemsWithChatId.length === 0) {
+        console.log('No items with chat_id found');
+        return new Response(JSON.stringify({
+          success: true,
+          items_inserted: 0,
+          message: 'No items with chat_id found (users not connected to Telegram)',
+          filters_applied: {
+            days_ahead: daysAhead,
+            user_id: userId,
+            category,
+            include_expired: includeExpired
+          }
+        }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+        });
+      }
+
+      // Insert into expiring_items_queue
+      const itemsInserted = await insertIntoExpiringQueue(itemsWithChatId, usersMap);
+
+      // Get summary for response
+      const summary = {
+        urgent: itemsWithChatId.filter(item => getPriority(calculateDaysUntilExpiry(item.expiration_date)) === 'urgent').length,
+        high: itemsWithChatId.filter(item => getPriority(calculateDaysUntilExpiry(item.expiration_date)) === 'high').length,
+        medium: itemsWithChatId.filter(item => getPriority(calculateDaysUntilExpiry(item.expiration_date)) === 'medium').length,
+        low: itemsWithChatId.filter(item => getPriority(calculateDaysUntilExpiry(item.expiration_date)) === 'low').length,
+        total: itemsWithChatId.length
+      };
+
+      console.log(`POST request completed - inserted ${itemsInserted} items into queue`);
+
+      return new Response(JSON.stringify({
+        success: true,
+        items_inserted: itemsInserted,
+        items_found: rawItems.length,
+        items_with_chat_id: itemsWithChatId.length,
+        items_without_chat_id: rawItems.length - itemsWithChatId.length,
+        summary,
+        filters_applied: {
+          days_ahead: daysAhead,
+          user_id: userId,
+          category,
+          include_expired: includeExpired
+        }
+      }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+      });
+    }
 
   } catch (err) {
     console.error('Unhandled error in check-items-expiring:', err);
@@ -304,7 +511,7 @@ Deno.serve(async (req) => {
   curl -i --location --request GET 'http://127.0.0.1:54321/functions/v1/check-items-expiring?days=3&category=dairy&include_expired=true' \
     --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0'
 
-  // POST request with JSON body
+  // POST request with JSON body (inserts items into expiring_items_queue)
   curl -i --location --request POST 'http://127.0.0.1:54321/functions/v1/check-items-expiring' \
     --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0' \
     --header 'Content-Type: application/json' \
@@ -316,5 +523,15 @@ Deno.serve(async (req) => {
       "sort_order": "asc",
       "limit": 100
     }'
+
+  // Response example for POST:
+  // {
+  //   "success": true,
+  //   "items_inserted": 3,
+  //   "items_found": 5,
+  //   "items_with_chat_id": 3,
+  //   "items_without_chat_id": 2,
+  //   "summary": { "urgent": 1, "high": 1, "medium": 1, "low": 0, "total": 3 }
+  // }
 
 */
