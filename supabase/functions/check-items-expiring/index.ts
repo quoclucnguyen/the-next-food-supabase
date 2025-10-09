@@ -133,17 +133,64 @@ async function insertIntoExpiringQueue(items: MergedItem[], usersMap: Map<string
     scheduled_at: new Date().toISOString()
   }));
 
-  const { error } = await supabase
-    .from('expiring_items_queue')
-    .insert(queueRecords);
+  // Log từng record trước khi insert để debug
+  console.log('Queue records to insert:');
+  queueRecords.forEach((record, index) => {
+    console.log(`Record ${index + 1}:`, {
+      item_name: record.item_name,
+      food_item_id: record.food_item_id,
+      cosmetic_id: record.cosmetic_id,
+      user_id: record.user_id,
+      chat_id: record.chat_id,
+      expiration_date: record.expiration_date,
+      category: record.category,
+      has_required_fields: !!(record.user_id && record.chat_id && record.expiration_date && record.item_name)
+    });
+  });
 
-  if (error) {
-    console.error('Error inserting into expiring_items_queue:', error);
-    throw new Error(`Failed to insert into expiring_items_queue: ${error.message}`);
+  // Try inserting one by one to catch specific errors
+  let successCount = 0;
+  const errors: any[] = [];
+
+  for (let i = 0; i < queueRecords.length; i++) {
+    const record = queueRecords[i];
+    console.log(`Inserting record ${i + 1}/${queueRecords.length}: ${record.item_name}`);
+
+    try {
+      const { error } = await supabase
+        .from('expiring_items_queue')
+        .insert([record]);
+
+      if (error) {
+        console.error(`Failed to insert record ${i + 1}:`, {
+          item_name: record.item_name,
+          error: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code
+        });
+        errors.push({ record: record.item_name, error });
+      } else {
+        console.log(`✅ Successfully inserted record ${i + 1}: ${record.item_name}`);
+        successCount++;
+      }
+    } catch (err) {
+      console.error(`Exception inserting record ${i + 1}:`, {
+        item_name: record.item_name,
+        error: err
+      });
+      errors.push({ record: record.item_name, error: err });
+    }
   }
 
-  console.log(`Successfully inserted ${queueRecords.length} items into expiring_items_queue`);
-  return queueRecords.length;
+  console.log(`Insert summary: ${successCount}/${queueRecords.length} successful, ${errors.length} errors`);
+
+  if (errors.length > 0) {
+    console.error('All errors:', errors);
+    // Don't throw error - return partial success count
+  }
+
+  return successCount;
 }
 
 // Main function to check for expiring items
